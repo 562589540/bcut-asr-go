@@ -3,6 +3,7 @@ package asr
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,12 +32,17 @@ type BcutASR struct {
 	downloadURL string
 	taskID      string
 	onProgress  types.ProgressCallback
+	ctx         context.Context
 }
 
-func New(cookie ...string) *BcutASR {
+func New(ctx context.Context, cookie ...string) *BcutASR {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	b := &BcutASR{
 		client: &http.Client{},
 		etags:  make([]string, 0),
+		ctx:    ctx,
 	}
 	return b
 }
@@ -47,7 +53,7 @@ func (b *BcutASR) processMedia(filePath string) error {
 	// 检查是否是支持的音频格式
 	for _, format := range types.SupportedInputFormats {
 		if "."+format == ext {
-			// 直接读取音频文件
+			// 直接读取音��文件
 			if b.onProgress != nil {
 				b.reportProgress(types.StageInit, 0, "读取音频文件...")
 			}
@@ -138,7 +144,13 @@ func (b *BcutASR) Upload() error {
 		"model_id":           {"7"},
 	}
 
-	resp, err := b.client.PostForm(types.GetAPIBaseURL()+types.APIReqUpload, formData)
+	req, err := http.NewRequestWithContext(b.ctx, http.MethodPost, types.GetAPIBaseURL()+types.APIReqUpload, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := b.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request upload failed: %w", err)
 	}
@@ -181,6 +193,12 @@ func (b *BcutASR) Upload() error {
 func (b *BcutASR) uploadParts() error {
 	totalParts := len(b.uploadURLs)
 	for i, url := range b.uploadURLs {
+		select {
+		case <-b.ctx.Done():
+			return b.ctx.Err()
+		default:
+		}
+
 		// 计算上传进度 (0-90%)
 		progress := (i + 1) * 90 / totalParts
 		b.reportProgress(
@@ -195,7 +213,7 @@ func (b *BcutASR) uploadParts() error {
 			end = len(b.soundData)
 		}
 
-		req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(b.soundData[start:end]))
+		req, err := http.NewRequestWithContext(b.ctx, http.MethodPut, url, bytes.NewReader(b.soundData[start:end]))
 		if err != nil {
 			return err
 		}
@@ -227,7 +245,13 @@ func (b *BcutASR) commitUpload() error {
 		"model_id":    {"7"},
 	}
 
-	resp, err := b.client.PostForm(types.GetAPIBaseURL()+types.APICommitUpload, formData)
+	req, err := http.NewRequestWithContext(b.ctx, http.MethodPost, types.GetAPIBaseURL()+types.APICommitUpload, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := b.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -263,7 +287,7 @@ func (b *BcutASR) CreateTask() (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodPost,
+	req, err := http.NewRequestWithContext(b.ctx, http.MethodPost,
 		types.GetAPIBaseURL()+types.APICreateTask,
 		bytes.NewReader(reqBody))
 	if err != nil {
@@ -297,8 +321,15 @@ func (b *BcutASR) CreateTask() (string, error) {
 }
 
 func (b *BcutASR) QueryResult() (*types.ASRResult, error) {
-	resp, err := b.client.Get(fmt.Sprintf("%s%s?model_id=7&task_id=%s",
-		types.GetAPIBaseURL(), types.APIQueryResult, b.taskID))
+	req, err := http.NewRequestWithContext(b.ctx, http.MethodGet,
+		fmt.Sprintf("%s%s?model_id=7&task_id=%s",
+			types.GetAPIBaseURL(), types.APIQueryResult, b.taskID),
+		nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request failed: %w", err)
+	}
+
+	resp, err := b.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -364,6 +395,7 @@ type ConvertOptions struct {
 	Interval   float64                // 轮询间隔（秒），默认 30.0
 	Progress   types.ProgressCallback // 进度回调，可选
 	OutputPath string                 // 输出路径，可选，默认与输入文件同目录
+	Context    context.Context        // 上下文，可选，用于取消操作
 }
 
 // DefaultConvertOptions 默认转换选项
@@ -388,8 +420,12 @@ func ConvertToSubtitle(inputFile string, opts ...ConvertOptions) error {
 	if options.Interval <= 0 {
 		options.Interval = 30.0
 	}
+	// 确保上下文有值
+	if options.Context == nil {
+		options.Context = context.Background()
+	}
 
-	bcutASR := New().WithProgress(options.Progress)
+	bcutASR := New(options.Context).WithProgress(options.Progress)
 
 	// 设置输入文件
 	if err := bcutASR.SetData(inputFile); err != nil {
@@ -416,59 +452,66 @@ func ConvertToSubtitle(inputFile string, opts ...ConvertOptions) error {
 	}
 
 	// 轮询检查任务状态
+	ticker := time.NewTicker(time.Duration(options.Interval * float64(time.Second)))
+	defer ticker.Stop()
+
 	for {
-		result, err := bcutASR.QueryResult()
-		if err != nil {
-			return err
-		}
-
-		if result == nil {
-			time.Sleep(time.Duration(options.Interval * float64(time.Second)))
-			continue
-		}
-
-		// 生成输出文件名
-		var outputFile string
-		if options.OutputPath != "" {
-			// 如果指定了输出路径
-			if err := os.MkdirAll(filepath.Dir(options.OutputPath), 0755); err != nil {
-				return fmt.Errorf("创建输出目录失败: %w", err)
-			}
-			// 如果指定的是目录，则在该目录下生成默认文件名
-			if info, err := os.Stat(options.OutputPath); err == nil && info.IsDir() {
-				outputFile = filepath.Join(options.OutputPath,
-					filepath.Base(inputFile[:len(inputFile)-len(filepath.Ext(inputFile))])+"."+options.Format)
-			} else {
-				// 否则使用指定的完整路径
-				outputFile = options.OutputPath
-			}
-		} else {
-			// 默认与输入文件同目录
-			outputFile = filepath.Join(
-				filepath.Dir(inputFile),
-				filepath.Base(inputFile[:len(inputFile)-len(filepath.Ext(inputFile))])+"."+options.Format,
-			)
-		}
-
-		// 根据格式输出结果
-		var output string
-		switch options.Format {
-		case "srt":
-			output = result.ToSRT()
-		case "lrc":
-			output = result.ToLRC()
-		case "txt":
-			output = result.ToTXT()
-		case "json":
-			jsonBytes, err := json.MarshalIndent(result, "", "  ")
+		select {
+		case <-options.Context.Done():
+			return options.Context.Err()
+		case <-ticker.C:
+			result, err := bcutASR.QueryResult()
 			if err != nil {
-				return fmt.Errorf("JSON序列化失败: %w", err)
+				return err
 			}
-			output = string(jsonBytes)
-		default:
-			return fmt.Errorf("不支持的输出格式: %s", options.Format)
-		}
 
-		return os.WriteFile(outputFile, []byte(output), 0644)
+			if result == nil {
+				continue
+			}
+
+			// 生成输出文件名
+			var outputFile string
+			if options.OutputPath != "" {
+				// 如果指定了输出路径
+				if err := os.MkdirAll(filepath.Dir(options.OutputPath), 0755); err != nil {
+					return fmt.Errorf("创建输出目录失败: %w", err)
+				}
+				// 如果指定的是目录，则在该目录下生成默认文件名
+				if info, err := os.Stat(options.OutputPath); err == nil && info.IsDir() {
+					outputFile = filepath.Join(options.OutputPath,
+						filepath.Base(inputFile[:len(inputFile)-len(filepath.Ext(inputFile))])+"."+options.Format)
+				} else {
+					// 否则使用指定的完整路径
+					outputFile = options.OutputPath
+				}
+			} else {
+				// 默认与输入文件同目录
+				outputFile = filepath.Join(
+					filepath.Dir(inputFile),
+					filepath.Base(inputFile[:len(inputFile)-len(filepath.Ext(inputFile))])+"."+options.Format,
+				)
+			}
+
+			// 根据格式输出结果
+			var output string
+			switch options.Format {
+			case "srt":
+				output = result.ToSRT()
+			case "lrc":
+				output = result.ToLRC()
+			case "txt":
+				output = result.ToTXT()
+			case "json":
+				jsonBytes, err := json.MarshalIndent(result, "", "  ")
+				if err != nil {
+					return fmt.Errorf("JSON序列化失败: %w", err)
+				}
+				output = string(jsonBytes)
+			default:
+				return fmt.Errorf("不支持的输出格式: %s", options.Format)
+			}
+
+			return os.WriteFile(outputFile, []byte(output), 0644)
+		}
 	}
 }
