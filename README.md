@@ -15,7 +15,7 @@
 确保已安装 FFmpeg，然后：
 
 ```bash
-go install github.com/yourusername/bcut-asr-go/cmd/bcut-asr@latest
+go install github.com/562589540/bcut-asr-go/cmd/bcut-asr@latest
 ```
 
 ## 使用方法
