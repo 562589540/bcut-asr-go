@@ -53,7 +53,7 @@ package main
 import (
     "log"
     
-    "github.com/yourusername/bcut-asr-go/pkg/asr"
+    "github.com/562589540/bcut-asr-go/pkg/asr"
 )
 
 func main() {
