@@ -1,6 +1,7 @@
 package asr
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,7 +24,7 @@ func TestIntegration_FullProcess(t *testing.T) {
 	}
 
 	// 创建ASR实例并设置进度回调
-	bcutASR := New().WithProgress(func(info types.ProgressInfo) {
+	bcutASR := New(context.Background(), "").WithProgress(func(info types.ProgressInfo) {
 		switch info.Stage {
 		case types.StageInit:
 			t.Logf("[初始化] 进度: %d%%, %s", info.Current, info.Description)

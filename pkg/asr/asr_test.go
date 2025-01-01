@@ -1,6 +1,7 @@
 package asr
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ func TestBcutASR_SetData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	asr := New()
+	asr := New(context.Background(), "")
 	if err := asr.SetData(tmpFile); err != nil {
 		t.Errorf("SetData() error = %v", err)
 	}
@@ -68,7 +69,7 @@ func TestBcutASR_Upload(t *testing.T) {
 	types.SetAPIBaseURL(server.URL)
 	defer func() { types.SetAPIBaseURL(origBaseURL) }()
 
-	asr := New()
+	asr := New(context.Background(), "")
 	asr.soundName = "test.mp3"
 	asr.soundData = []byte("test data")
 	asr.soundFormat = "mp3"
@@ -98,7 +99,7 @@ func TestBcutASR_CreateTask(t *testing.T) {
 	types.SetAPIBaseURL(server.URL)
 	defer func() { types.SetAPIBaseURL(origBaseURL) }()
 
-	asr := New()
+	asr := New(context.Background(), "")
 	asr.downloadURL = "http://test.com/download"
 
 	taskID, err := asr.CreateTask()
@@ -139,7 +140,7 @@ func TestBcutASR_QueryResult(t *testing.T) {
 	types.SetAPIBaseURL(server.URL)
 	defer func() { types.SetAPIBaseURL(origBaseURL) }()
 
-	asr := New()
+	asr := New(context.Background(), "")
 	asr.taskID = "test-task"
 
 	result, err := asr.QueryResult()
